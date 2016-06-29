@@ -1,0 +1,19 @@
+# Misc. temporary files
+.*.swp
+*.pyc
+
+# Each person should use their own config
+/config.yml
+
+# Misc.
+/fuzzers/*/afl-fuzz
+/fuzzers/*/bzImage.*
+/fuzzers/*/vmlinux.*
+/fuzzers/*/config.kvm
+/fuzzers/*/config.uml
+/fuzzers/*/*.exe
+/fuzzers/*/*.so
+/fuzzers/*/output
+
+# Runtime data
+/tmp/

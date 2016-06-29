@@ -1,0 +1,11 @@
+instrument: [fs/ext4/]
+config:
+ BLK_DEV_LOOP: y
+ BLK_DEV_LOOP_MIN_COUNT: 8
+ EXT4_FS: y
+ EXT4_USE_FOR_EXT2: y
+ EXT4_FS_POSIX_ACL: y
+ EXT4_FS_SECURITY: y
+ EXT4_ENCRYPTION: y
+ EXT4_DEBUG: n
+ JBD2_DEBUG: n

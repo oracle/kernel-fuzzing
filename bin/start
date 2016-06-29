@@ -1,0 +1,213 @@
+#! /usr/bin/python
+# -*- coding: utf-8 -*-
+#
+# kernel-fuzzing.git
+# Copyright (c) 2016  Oracle and/or its affiliates.  All rights reserved.
+#
+# Licensed under the Universal Permissive License v1.0 as shown at
+# http://oss.oracle.com/licenses/upl.
+#
+
+import argparse
+import glob
+import logging
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(__file__)
+sys.path.insert(0, os.path.join(HERE, '..', 'python'))
+
+import kafl
+
+def clean(path):
+    if os.path.exists(path):
+        shutil.rmtree(path)
+
+    os.mkdir(path)
+
+def main():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('--dry-run', '-n', action='store_true')
+    parser.add_argument('--use-guest-screen', action='store_true')
+    parser.add_argument('--strace', action='store_true')
+
+    # VM options
+    vm_group = parser.add_mutually_exclusive_group()
+    vm_group.add_argument('--uml', action='store_const', dest='vm', const='uml',
+        help='Start fuzzer in UML instance')
+    vm_group.add_argument('--kvm', action='store_const', dest='vm', const='kvm',
+        help='Start fuzzer in KVM instance')
+
+    # AFL-related options
+    parser.add_argument('--master', action='store_true')
+    parser.add_argument('--resume', '-r', action='store_true')
+    parser.add_argument('--timeout', '-t', type=int, default=None)
+    parser.add_argument('fuzzer', help='e.g. vfat')
+    parser.add_argument('name', help='e.g. 0')
+
+    logging.basicConfig(level=logging.DEBUG)
+
+    args = parser.parse_args()
+
+    linux_repo = kafl.config['linux_repo']
+    linux_afl_rev = kafl.config['linux_afl_rev']
+
+    if not args.dry_run and not os.getenv('STY'):
+        logging.error('Need to run inside an existing screen session')
+        sys.exit(1)
+
+    fuzzer = kafl.all_fuzzers.get(args.fuzzer)
+    if not fuzzer:
+        logging.error('Unknown fuzzer: %s', args.fuzzer)
+        sys.exit(1)
+
+    vm = args.vm or fuzzer.config.get('vm') or 'uml'
+
+    vmlinux = os.path.join(fuzzer.path, 'vmlinux.' + vm)
+    if not os.path.exists(vmlinux):
+        kafl.KernelBuilder(kafl.config, fuzzer, vm).build()
+
+    if not os.path.exists(os.path.join(fuzzer.path, 'afl-fuzz')):
+        kafl.AFLBuilder(kafl.config, fuzzer).build()
+
+    tmpdir = os.path.join('tmp', args.fuzzer, args.name)
+    kafl.mkdirp(tmpdir)
+
+    # Build fuzzer
+    fuzzer.build_so()
+    fuzzer.build_exe()
+
+    # Write guest init
+    guest_init = os.path.join(tmpdir, 'init')
+
+    kafl.mkdirp(os.path.join(fuzzer.path, 'output', '%s_%s' % (args.fuzzer, args.name)))
+
+    init_commands = []
+
+    screen_command = []
+    if args.use_guest_screen:
+        screen_command = ['screen', '-t', 'afl-fuzz']
+
+    strace_command = []
+    if args.strace:
+        strace_command = ['strace', '-o', 'strace.log']
+
+    init_commands.extend([
+        ['cd', os.path.abspath(fuzzer.path)],
+        screen_command +
+            strace_command +
+            ['./afl-fuzz'] + (['-t', args.timeout] if args.timeout else []) + [
+            '-i', '-' if args.resume else 'input',
+            '-o', 'output',
+            '-M' if args.master else '-S',
+            '%s_%s' % (args.fuzzer, args.name),
+            '--', './%s.so' % args.fuzzer, '@@',
+        ],
+    ])
+
+    kafl.write_init(guest_init, vm, init_commands)
+
+    if vm == 'uml':
+        def afl_cmd(*args):
+            return [
+                #'screen', '-t', '%s/%s' % (args.fuzzer, args.name),
+                vmlinux,
+                'mem=2048M',
+                'rootfstype=hostfs', 'rw'
+            ] + list(args) + [
+                'init=' + os.path.abspath(guest_init),
+            ]
+    elif vm == 'kvm':
+        kvm_exe = kafl.config.get('kvm', 'kvm')
+        bzImage = os.path.join(fuzzer.path, 'bzImage.' + vm)
+
+        def afl_cmd(*args):
+            kvm_args = (
+                'rootfstype=9p',
+                'root=/dev/root',
+                'rootflags=trans=virtio,version=9p2000.L',
+                'rw',
+                'console=ttyS0',
+                'init=%s' % os.path.abspath(guest_init),
+            )
+
+            return [
+                kvm_exe,
+                '-kernel', bzImage,
+                '-append', ' '.join(args + kvm_args),
+                '-fsdev', 'local,id=fsdev0,path=/,security_model=none',
+                '-device', 'virtio-9p-pci,fsdev=fsdev0,mount_tag=/dev/root',
+                '-serial', 'stdio',
+                '-display', 'none'
+                '-no-reboot',
+            ]
+
+    if args.dry_run:
+        print ' '.join(afl_cmd())
+        return
+
+    # Save terminal settings so we can restore them if UML crashes
+    with kafl.TerminalSaver():
+        retcode = subprocess.call(afl_cmd(
+            #'ignore_console_loglevel',
+            'loglevel=2',
+            'oops=panic',
+            'panic=0',
+            'panic_on_warn=1',
+        ))
+
+    return
+    #if retcode == 0:
+    #    return
+
+    # Re-run standalone to try to reproduce crash
+    crashes = os.path.join('crashes', args.fuzzer)
+    kafl.mkdirp(crashes)
+
+    # XXX: Yeah, it's racy...
+    crash = os.path.join(crashes, time.strftime('%Y-%m-%d %H:%M:%S'))
+    kafl.mkdirp(crash)
+
+    shutil.copy(os.path.join(fuzzer.path, '%s.exe' % args.fuzzer), crash)
+
+    commands = [
+        ['cd', os.path.abspath(fuzzer.path)],
+    ]
+
+    output_dir = os.path.join(fuzzer.path, 'output', '%s_%s' % (args.fuzzer, args.name))
+    all_testcases = glob.glob(os.path.join(output_dir, '.old_input.*'))
+    all_testcases.append(os.path.join(output_dir, '.cur_input'))
+    all_testcases.sort(key=lambda x: os.stat(x).st_mtime)
+
+    for testcase in all_testcases:
+        target = os.path.join(crash, os.path.basename(testcase).lstrip('.'))
+
+        shutil.copy(testcase, target)
+        commands.append(['./%s.exe' % args.fuzzer, os.path.relpath(target, fuzzer.path)])
+
+    commands.append(['sleep', '5'])
+
+    kafl.write_init(guest_init, vm, commands)
+
+    stdout = os.path.join(crash, 'stdout.txt')
+    with TerminalSaver():
+        retcode = subprocess.call(['timeout', '30'] + afl_cmd('ignore_console_loglevel'),
+            stdout=open(stdout, 'w'))
+
+    print "Output to %s" % crash
+
+    # Run addr2line on all the addresses in the log
+    with open(os.path.join(crash, 'debuginfo.txt'), 'w') as f:
+        for addr in set(re.findall(r'\b([0-9a-f]{8}|[0-9a-f]{16})\b', open(stdout).read())):
+            print >>f, '%s:' % addr
+            for line in subprocess.check_output(['addr2line', '-e', vmlinux, '-i', addr]).splitlines():
+                print >>f, line
+            print >>f
+
+if __name__ == '__main__':
+    main()

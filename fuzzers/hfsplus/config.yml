@@ -1,0 +1,6 @@
+instrument: [fs/hfsplus/]
+config:
+ BLK_DEV_LOOP: y
+ BLK_DEV_LOOP_MIN_COUNT: 8
+ HFSPLUS_FS: y
+ HFSPLUS_FS_POSIX_ACL: y

@@ -1,0 +1,364 @@
+#! /usr/bin/python
+# -*- coding: utf-8 -*-
+#
+# kernel-fuzzing.git
+# Copyright (c) 2016  Oracle and/or its affiliates.  All rights reserved.
+#
+# Licensed under the Universal Permissive License v1.0 as shown at
+# http://oss.oracle.com/licenses/upl.
+#
+
+import argparse
+import errno
+import os
+import shutil
+import subprocess
+import sys
+
+import jinja2
+
+def mkdirp(path):
+    try:
+        os.makedirs(path)
+    except OSError as e:
+        if e.errno != errno.EEXIST:
+            raise
+
+def mount(fstype, path, mntpoint, options=[]):
+    subprocess.check_call(['mount', '-o', ','.join(['loop'] + options), '-t', fstype, path, mntpoint])
+
+def umount(mntpoint):
+    subprocess.check_call(['umount', mntpoint])
+
+def add_some_files(mntpoint):
+    # This just creates a bunch of files at the given mount point.
+    # Hopefully these files will allow more interesting things to
+    # happen to the filesystem during fuzzing.
+
+    foo = os.path.join(mntpoint, 'foo')
+    subprocess.check_call(['mkdir', foo])
+
+    bar = os.path.join(foo, 'bar')
+    subprocess.check_call(['mkdir', bar])
+
+    baz = os.path.join(bar, 'baz')
+    with open(baz, 'w') as f:
+        print >>f, 'hello world'
+
+    # set an extended attribute
+    xattr = os.path.join(bar, 'xattr')
+    with open(xattr, 'w') as f:
+        pass
+    subprocess.call(['setfattr', '-n', 'user.mime_type', '-v', 'text/plain', xattr])
+
+    acl = os.path.join(bar, 'acl')
+    with open(acl, 'w') as f:
+        pass
+    subprocess.call(['setfacl', '-m', 'u:nobody:r', acl])
+
+    # Get some unicode in there
+    utf = os.path.join(bar, 'æøå')
+    with open(utf, 'w') as f:
+        print >>f, 'xyz'
+
+    # special files
+    fifo = os.path.join(bar, 'fifo')
+    subprocess.call(['mknod', fifo, 'p'])
+
+    # hard link
+    hardlink = os.path.join(bar, 'hln')
+    subprocess.call(['ln', baz, hardlink])
+
+    # soft link
+    softlink = os.path.join(bar, 'sln')
+    subprocess.call(['ln', '-s', baz, softlink])
+
+def index_from(container, index, val):
+    for i in range(index, len(container)):
+        if container[i] == val:
+            return i - index
+
+    raise ValueError("asdf")
+
+def analyze(paths, chunksize=64):
+    zeros = '\x00' * chunksize
+
+    # Read the images in chunks of 64 bytes; we will only fuzz
+    # chunks which are non-zero to start with.
+    bitmap = {}
+    for path in paths:
+        with open(path) as f:
+            offset = 0
+            while True:
+                data = f.read(chunksize)
+                if len(data) == 0:
+                    break
+
+                val = int(data != zeros)
+                bitmap[offset] = bitmap.get(offset, 0) | val
+                offset = offset + 1
+
+    # linearise bitmap
+    bitmap = [val for offset, val in sorted(bitmap.iteritems())]
+
+    print "calculating extents"
+
+    # calculate extents
+    extents = []
+
+    i = 0
+    while True:
+        try:
+            j = i + index_from(bitmap, i, 1)
+        except ValueError, e:
+            # No 1 found, so there are no more chunks to encode
+            break
+
+        try:
+            n = index_from(bitmap, j, 0)
+        except ValueError, e:
+            # No 0 found, so everything until the end is a chunk
+            n = len(bitmap) - j
+
+        extents.append((j * chunksize, n * chunksize))
+        i = j + n
+
+    return sum(bitmap) * chunksize, len(bitmap) * chunksize, extents
+
+class Filesystem(object):
+    def __init__(self, name, size, requires_loop=False):
+        self.name = name
+        self.size = size
+        self.requires_loop = requires_loop
+
+        # Derived attributes
+        self.mkfs_exe = 'mkfs.' + name
+        self.mkfs_args = []
+
+        self.mount_options = []
+
+    def mkfs(self, path, extra_args=[]):
+        subprocess.check_call([
+            'dd',
+            'if=/dev/zero',
+            'of=' + path,
+            'bs=1K', 'count=%uK' % self.size,
+            'status=none',
+        ])
+
+        if self.requires_loop:
+            # attach file to loop device
+            device = subprocess.check_output([
+                'losetup', '-f', '--show', path
+            ]).splitlines()[0]
+        else:
+            device = path
+
+        subprocess.check_call([self.mkfs_exe] + self.mkfs_args + extra_args + [device])
+
+        if self.requires_loop:
+            # detach loop device
+            subprocess.check_call([
+                'losetup', '-d', device
+            ])
+
+bfs = Filesystem('bfs', 32, requires_loop=True)
+
+btrfs = Filesystem('btrfs', 256)
+
+ext4 = Filesystem('ext4', 16)
+ext4.mkfs_args = ['-F', '-q']
+
+f2fs = Filesystem('f2fs', 128)
+
+hfs = Filesystem('hfs', 64)
+hfs.mkfs_args = ['-h']
+
+hfsplus = Filesystem('hfsplus', 64)
+
+isofs = Filesystem('isofs', 16)
+isofs.mkfs_exe = 'mkisofs'
+
+gfs2 = Filesystem('gfs2', 11)
+gfs2.mkfs_args = ['-O']
+gfs2.mount_options = ['localflocks']
+
+nilfs2 = Filesystem('nilfs2', 4)
+nilfs2.mount_options = ['nogc']
+
+ntfs = Filesystem('ntfs', 4)
+ntfs.mkfs_args = ['-F', '-f']
+
+ocfs2 = Filesystem('ocfs2', 64)
+ocfs2.mkfs_args = ['--fs-features=local', '--quiet']
+
+reiserfs = Filesystem('reiserfs', 64)
+reiserfs.mkfs_args = ['-f', '-f']
+
+udf = Filesystem('udf', 16)
+udf.mkfs_exe = 'mkudffs'
+
+vfat = Filesystem('vfat', 64)
+
+xfs = Filesystem('xfs', 16)
+
+filesystems = {
+    'bfs': (bfs, [
+        [],
+    ]),
+    'btrfs': (btrfs, [
+        [],
+    ]),
+    'ext4': (ext4, [
+        ['-E', 'mmp_update_interval=1'],
+        ['-E', 'stride=3'],
+        ['-E', 'stripe_width=3'],
+        ['-O', 'uninit_bg', '-E', 'lazy_itable_init=1'],
+        ['-E', 'lazy_journal_init=1'],
+        ['-O', 'flex_bg', '-E', 'packed_meta_blocks=1'],
+        # These seem to make the testcases very large (100K+)
+        #['-g', str(256 + 2 * 8)],
+        #['-O', 'bigalloc', '-g', str(256 + 2 * 8)],
+        #['-O', 'flex_bg', '-G', '1'],
+        ['-i', '1024'],
+        ['-i', '67108864'],
+        ['-I', '128'],
+        ['-I', '1024'],
+        ['-j'],
+        ['-m', '50'],
+        ['-r', '0'],
+        ['-t', 'small'],
+        ['-t', 'largefile4'],
+    ]),
+    'f2fs': (f2fs, [
+        [],
+    ]),
+    'hfs': (hfs, [
+        [],
+    ]),
+    'hfsplus': (hfsplus, [
+        [],
+    ]),
+    'isofs': (isofs, [
+        # mkisofs needs to be run by hand, use --extra-inputs
+    ]),
+    'nilfs2': (nilfs2, [
+        ['-B', '32'],
+    ]),
+    'ntfs': (ntfs, [
+        [],
+    ]),
+    'ocfs2': (ocfs2, [
+        [],
+        ['-J', 'block32'],
+        ['-J', 'block64'],
+        ['-T', 'mail'],
+        ['--fs-features=local,sparse'],
+        ['--fs-features=local,unwritten'],
+        ['--fs-features=local,inline-data'],
+        ['--fs-features=local,extended-slotmap'],
+        ['--fs-features=local,nometaecc'],
+        ['--fs-features=local,refcount'],
+        ['--fs-features=local,xattr'],
+        ['--fs-features=local,usrquota'],
+        ['--fs-features=local,grpquota'],
+        ['--fs-features=local,indexed-dirs'],
+        ['--fs-features=local,discontig-bg'],
+    ]),
+    'gfs2': (gfs2, [
+        #['-t', 'foo:bar'],
+        #['-p', 'lock_nolock'],
+        ['-D', '-j', '1', '-J', '8', '-o', 'align=0', '-b', '512', '-p', 'lock_nolock', '-r', '32'],
+    ]),
+    'reiserfs': (reiserfs, [
+        ['--format', '3.5'],
+        ['--format', '3.6'],
+    ]),
+    'udf': (udf, [
+        [],
+    ]),
+    'vfat': (vfat, [
+        [],
+    ]),
+    'xfs': (xfs, [
+        [],
+        ['-K'],
+        ['-i', 'size=2048'],
+        ['-i', 'maxpct=0'],
+        ['-i', 'align=0'],
+        ['-i', 'attr=1'],
+        ['-l', 'version=1'],
+        ['-l', 'lazy-count=1'],
+        ['-n', 'version=ci'],
+    ]),
+}
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mountpoint', default='mnt')
+    parser.add_argument('--chunksize', type=int, default=64)
+    parser.add_argument('--extra-inputs', nargs='*')
+    parser.add_argument('fstype', choices=filesystems.keys())
+
+    args = parser.parse_args()
+
+    fs, all_mkfs_args = filesystems.get(args.fstype)
+
+    template_env = jinja2.Environment(loader=jinja2.FileSystemLoader('templates'))
+    extents_template = template_env.get_template('extents.hh')
+
+    input_dir = os.path.join('fuzzers', fs.name, 'input')
+    if os.path.exists(input_dir):
+        shutil.rmtree(input_dir)
+    mkdirp(input_dir)
+
+    images = []
+    for i, mkfs_args in enumerate(all_mkfs_args):
+        image = os.path.join(input_dir, '%02u.image' % i)
+        print image
+
+        fs.mkfs(image, mkfs_args)
+        mkdirp(args.mountpoint)
+        try:
+            #shutil.copyfile(image, image + '.orig')
+            mount(fs.name, image, args.mountpoint, fs.mount_options)
+            add_some_files(args.mountpoint)
+        finally:
+            # Whatever happened, we should always unmount it
+            umount(args.mountpoint)
+
+        images.append(image)
+
+    images.extend(args.extra_inputs)
+
+    # Here, .compactimage is the image with the all-0 chunks removed;
+    # extents.h will contain the list of extents
+    print "minimizing image"
+    in_size, out_size, extents = analyze(images, chunksize=args.chunksize)
+
+    print sum(length for offset, length in extents), in_size
+    assert sum(length for offset, length in extents) == in_size
+
+    print "afl test-case size: %u KiB" % (in_size / 1024)
+
+    with open('fuzzers/%s/%s-extents.hh' % (fs.name, fs.name), 'w') as f:
+        print >>f, extents_template.render({
+            'name': fs.name,
+            'in_size': in_size,
+            'out_size': out_size,
+            'extents': extents,
+        })
+
+    # Compress images
+    for image in images:
+        smallimage = image + '.small'
+        with open(image) as fin:
+            with open(smallimage, 'w') as fout:
+                for offset, length in extents:
+                    fin.seek(offset)
+                    fout.write(fin.read(length))
+
+        os.unlink(image)
+
+if __name__ == '__main__':
+    main()

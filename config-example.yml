@@ -1,0 +1,30 @@
+#
+# (Path to) compiler command (default: system compiler)
+#
+cc: gcc-5
+
+#
+# (Path to) kvm command (default: 'kvm'); may be called qemu-kvm or
+# qemu-system-x86_64 on some systems
+#
+kvm: /usr/bin/kvm
+
+#
+# Path to linux bare .git directory
+#
+linux_repo: /home/vegard/linux/.git
+
+#
+# Linux revision to use for testing (must include AFL patches and satconfig patches)
+#
+linux_afl_rev: HEAD
+
+#
+# Path to afl bare .git directory
+#
+afl_repo: /home/vegard/git/afl/.git
+
+#
+# AFL revision to use
+#
+afl_rev: HEAD

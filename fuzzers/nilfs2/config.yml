@@ -1,0 +1,5 @@
+instrument: [fs/nilfs2/]
+config:
+ BLK_DEV_LOOP: y
+ BLK_DEV_LOOP_MIN_COUNT: 8
+ NILFS2_FS: y

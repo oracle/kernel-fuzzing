@@ -1,0 +1,39 @@
+#! /bin/bash
+
+set -e
+set -u
+set -x
+
+mount -t proc none /proc || true
+mount -t sysfs none /sys || true
+
+# Allow us to mount stuff in /mnt inside the guest
+mkdir -p /mnt
+mount -t tmpfs none /mnt
+
+# Allow screen to run inside the guest
+mkdir -p /var/run/screen
+mount -t tmpfs none /var/run/screen
+
+mount -t tmpfs none /tmp
+
+# save core dumps
+echo ulimit -c unlimited
+ulimit -c unlimited
+
+# Workaround for older versions of AFL that try to check the binary
+# for instrumentation
+export AFL_SKIP_BIN_CHECK=1
+
+{% for command in commands -%}
+{{ command }}
+{% endfor %}
+
+# Clean shutdown, no molly-guard
+{% if vm == 'uml' %}
+/sbin/halt -f
+{% endif %}
+
+{% if vm == 'kvm' %}
+/sbin/reboot -f
+{% endif %}

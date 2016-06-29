@@ -1,0 +1,170 @@
+#! /usr/bin/python
+# -*- coding: utf-8 -*-
+#
+# kernel-fuzzing.git
+# Copyright (c) 2016  Oracle and/or its affiliates.  All rights reserved.
+#
+# Licensed under the Universal Permissive License v1.0 as shown at
+# http://oss.oracle.com/licenses/upl.
+#
+
+import argparse
+import glob
+import logging
+import os
+import random
+import shutil
+import subprocess
+import sys
+import tempfile
+
+import kafl
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--dry-run', '-n', action='store_true')
+    parser.add_argument('--skip-vmlinux', action='store_true')
+
+    logging.basicConfig(level=logging.DEBUG)
+
+    args = parser.parse_args()
+
+    if not args.dry_run:
+        for fuzzer in kafl.all_fuzzers.values():
+            fuzzer.build_exe()
+
+    tmpdir = os.path.join('tmp', '.gcov')
+
+    # Start with a clean slate
+    if not args.skip_vmlinux and not args.dry_run:
+        shutil.rmtree(tmpdir)
+        kafl.mkdirp(tmpdir)
+
+    # Compile kernel
+    linux_dir = os.path.join(tmpdir, 'linux')
+    if not args.skip_vmlinux and not args.dry_run:
+        logging.debug("Checking out kernel sources in %s", linux_dir)
+
+        kafl.mkdirp(linux_dir)
+        kafl.git_export(kafl.config['linux_repo'], kafl.config['linux_gcov_rev'], linux_dir)
+
+        shutil.copyfile(kafl.config['linux_gcov_config'],
+            os.path.join(linux_dir, '.config'))
+        kafl.make(linux_dir, ['silentoldconfig'])
+        kafl.make(linux_dir, ['-j64'])
+
+    guest_init = os.path.join(tmpdir, 'init')
+
+    def write_init(testcases):
+        commands = [
+            ['cd', os.path.abspath(tmpdir)],
+        ]
+
+        for exe, testcase in sorted(testcases):
+            # Protect the testcase from being modified
+            commands.append(['echo', '@@@', 'test', exe, testcase])
+            commands.append(['cp', os.path.abspath(testcase), '.cur_input'])
+            commands.append([os.path.abspath(exe), '.cur_input'])
+
+        commands.append(['echo', '@@@', 'success'])
+        kafl.write_init(guest_init, commands)
+
+    # Gather the testcases we'll be running
+    testcases = []
+    for fuzzer in kafl.all_fuzzers.values():
+        exe = os.path.join(fuzzer.path, fuzzer.name + '.exe')
+        for testcase in glob.glob(os.path.join(fuzzer.path, 'output', '*', 'queue', '*')):
+            testcases.append((exe, testcase))
+
+    vmlinux_command = [
+        os.path.join(linux_dir, 'vmlinux'),
+        'mem=2048M',
+        'rootfstype=hostfs', 'rw',
+        'oops=panic', 'panic_on_warn=1', 'panic=-1',
+        'init=' + os.path.abspath(guest_init),
+    ]
+
+    if args.dry_run:
+        print ' '.join(vmlinux_command)
+    else:
+        kafl.mkdirp('crashes')
+
+        # Run as many testcases as we can per boot; if something crashes, we
+        # skip the failing testcase and continue where we left off. At the
+        # end, we rerun everything that didn't fail in a single boot.
+        todo = set(testcases)
+        good_testcases = set()
+        bad_testcases = set()
+
+        while todo:
+            logging.info("%u todo", len(todo))
+
+            # Grab 20 testcases at random and add a timeout to the command
+            # so that in case one of them gets rally stuck we can always
+            # recover without losing too much time
+            if len(todo) <= 200:
+                todo_now = list(todo)
+            else:
+                todo_now = random.sample(todo, 200)
+            write_init(todo_now)
+
+            p = subprocess.Popen(
+                [
+                    'timeout', '%u' % (5 + .2 * len(todo_now)),
+                ] + vmlinux_command,
+                stdin=open('/dev/null'),
+                stdout=open('vmlinux.log', 'w+'),
+            )
+            logging.info("Running vmlinux as pid %d", p.pid)
+            p.wait()
+
+            success = False
+            results = []
+            with open('vmlinux.log') as f:
+                for line in f:
+                    if line.startswith('@@@ '):
+                        tokens = line.rstrip().split()[1:]
+                        if tokens[0] == 'success':
+                            success = True
+                        elif tokens[0] == 'test':
+                            results.append(tuple(tokens[1:]))
+
+            todo -= set(results)
+            if success:
+               continue
+
+            # The last one is bad
+            bad_testcase = results[-1]
+
+            logging.info("Removing %s as it seems to have caused a kernel crash", bad_testcase)
+            good_testcases |= set(results[:-1])
+            bad_testcases.add(bad_testcase)
+
+            # Simplify the filename
+            components = bad_testcase[1].split('/')
+
+            crash_log = os.path.join('crashes', components[1], components[3], components[5] + '.txt')
+            kafl.mkdirp(os.path.dirname(crash_log))
+            os.rename('vmlinux.log', crash_log)
+
+        logging.info("Running %u good testcases", len(good_testcases))
+        write_init(good_testcases)
+        p = subprocess.Popen(vmlinux_command, stdin=open('/dev/null'), stdout=open('vmlinux.log', 'w+'))
+        p.wait()
+
+    gcov_command = [
+        'gcovr',
+        '--root=.',
+        '--xml',
+        '--xml-pretty',
+        '--output=' + os.path.abspath('linux-coverage.xml'),
+        '.',
+    ]
+
+    if args.dry_run:
+        print ' '.join(gcov_command)
+    else:
+        subprocess.check_call(gcov_command, cwd=linux_dir)
+
+if __name__ == '__main__':
+    main()

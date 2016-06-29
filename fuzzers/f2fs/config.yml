@@ -1,0 +1,8 @@
+instrument: [fs/f2fs/]
+config:
+ BLK_DEV_LOOP: y
+ BLK_DEV_LOOP_MIN_COUNT: 8
+ F2FS_FS_SECURITY: y
+ F2FS_CHECK_FS: n
+ F2FS_FS_ENCRYPTION: y
+ F2FS_IO_TRACE: n

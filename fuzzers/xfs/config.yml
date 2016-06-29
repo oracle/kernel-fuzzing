@@ -1,0 +1,10 @@
+instrument: [fs/xfs/]
+config:
+ BLK_DEV_LOOP: y
+ BLK_DEV_LOOP_MIN_COUNT: 8
+ XFS_FS: y
+ XFS_QUOTA: y
+ XFS_POSIX_ACL: y
+ XFS_RT: y
+ XFS_WARN: n
+ XFS_DEBUG: n

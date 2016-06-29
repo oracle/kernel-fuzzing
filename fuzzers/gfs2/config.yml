@@ -1,0 +1,6 @@
+instrument: [fs/gfs2/]
+config:
+ BLK_DEV_LOOP: y
+ BLK_DEV_LOOP_MIN_COUNT: 8
+ GFS2_FS: y
+ GFS2_FS_LOCKING_DLM: n

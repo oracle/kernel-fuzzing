@@ -1,0 +1,8 @@
+instrument: [fs/fat/]
+config:
+ BLK_DEV_LOOP: y
+ BLK_DEV_LOOP_MIN_COUNT: 8
+ VFAT_FS: y
+ NLS_CODEPAGE_437: y
+ NLS_ISO8859_1: y
+ NLS_UTF8: y

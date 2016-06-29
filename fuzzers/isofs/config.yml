@@ -1,0 +1,8 @@
+instrument: [fs/isofs/]
+config:
+ BLK_DEV_LOOP: y
+ BLK_DEV_LOOP_MIN_COUNT: 8
+ ISO9660_FS: y
+ JOLIET: y
+ ZISOFS: y
+ NLS_UTF8: y

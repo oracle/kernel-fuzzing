@@ -1,0 +1,7 @@
+instrument: [fs/ntfs/]
+config:
+ BLK_DEV_LOOP: y
+ BLK_DEV_LOOP_MIN_COUNT: 8
+ NTFS_FS: y
+ NTFS_DEBUG: n
+ NTFS_RW: y

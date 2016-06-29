@@ -1,0 +1,66 @@
+instrument:
+ - crypto/
+ - drivers/connector/
+ - drivers/infiniband/
+ - drivers/net/
+ - drivers/scsi/
+ - kernel/audit.o
+ - kernel/auditfilter.o
+ - kernel/auditsc.o
+ - kernel/audit_fsnotify.o
+ - kernel/audit_tree.o
+ - kernel/audit_watch.o
+ - lib/kobject.o
+ - lib/kobject_uevent.o
+ - net/
+ - security/selinux/
+config:
+ # we should have a network device
+ VETH: y
+ IP_ADVANCED_ROUTER: y
+ IP_MULTICAST: y
+ IP_FIB_TRIE_STATS: y
+ FIB_RULES: y
+ # things that provide netlink interfaces
+ FSNOTIFY: y
+ KOBJECT_UEVENT: y
+ DLM: y
+ CRYPTO_USER: y
+ CONNECTOR: y
+ SECURITY_SELINUX: y
+ # needs PCI/HAS_IOMEM, so it won't work on UML
+ #INFINIBAND: y
+ #INFINIBAND_IPOIB: y
+ # needs HAS_IOMEM
+ #W1: y
+ AUDIT: y
+ QUOTA_NETLINK_INTERFACE: y
+ SCSI_NETLINK: y
+ SCSI_ISCSI_ATTRS: y
+ BONDING: y
+ NET: y
+ L2TP: y
+ L2TP_V3: y
+ OPENVSWITCH: y
+ NFC: y
+ VLAN_8021Q: y
+ TIPC: y
+ BRIDGE: y
+ IEEE802154: y
+ NETLINK_DIAG: y
+ HSR: y
+ NETFILTER_NETLINK: y
+ NETFILTER_NETLINK_ACCT: y
+ NETFILTER_NETLINK_QUEUE: y
+ NETFILTER_NETLINK_LOG: y
+ NF_CT_NETLINK: y
+ NF_CT_NETLINK_TIMEOUT: y
+ NF_CT_NETLINK_HELPER: y
+ PHONET: y
+ INET: y
+ IRDA: y
+ XFRM: y
+ XFRM_USER: y
+ XFRM_STATISTICS: y
+ XFRM_ALGO: y
+ XFRM_IPCOMP: y

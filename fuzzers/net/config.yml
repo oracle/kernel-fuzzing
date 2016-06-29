@@ -1,0 +1,19 @@
+instrument: [net/, drivers/net/]
+config:
+ TUN: y
+ ETHERNET: y
+ INET: y
+ IPV6: y
+ IP_DCCP: y
+ IP_SCTP: y
+ RDS: y
+ TIPC: y
+ ATM: y
+ L2TP: y
+ DECNET: y
+ LLC2: y
+ IPX: y
+ ATALK: y
+ X25: y
+ LAPB: y
+ PHONET: y
